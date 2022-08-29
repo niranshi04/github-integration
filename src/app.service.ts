@@ -1,66 +1,68 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { Users } from './users/users.entity';
-import { Octokit } from "@octokit/rest";
-import { UsersService } from './users/users.service';
-import { Base64 } from 'js-base64';
-import { join } from 'path';
-import * as fs from 'fs';
+import { Transaction } from 'sequelize/types';
+import { GithubAuthorizationModel } from './model/github-authorization-model';
+import { GithubAuthorization } from './entity/GithubAuthorization'; 
+import { JwtService } from '@nestjs/jwt';
 
 
 @Injectable()
 export class AppService {
-  @Inject(UsersService)
-    private readonly usersService: UsersService;
+    constructor(
+    @Inject('GITHUB_AUTHORIZATION_DAO')
+    private githubAuthorizationRepo: typeof GithubAuthorizationModel,
+    private jwtService: JwtService) {}
 
-  async githubLoginDBUpdate(req): Promise<any> {
-    try{
-        await this.usersService.create(<Users>req.user);
-        return {
-            message: 'Added or updated the user in db.'
-        };
-    } catch(e) {
-        return {
-            message: e.message
-        };
-    }
-  }
+    public async upsertGithubAuthorization(
+        userName: string,
+        installation_id: number,
+        transaction?: Transaction,
+      ) {
+        const githubAuthEntity = new GithubAuthorization({
+            userName,
+            installation_id
+        });
+        const success = await this.githubAuthorizationRepo.upsert(githubAuthEntity, {
+          transaction,
+        });
+        return success[0];
+      }
 
-  async addRepo(req, res): Promise<any> {
-    const repoName = req.body.repository;
-    const user = req.user;
-    const obj = req.user;
-    try {
-        const octokit = new Octokit({
-            auth: user.accessToken
+      public async getAllInstallations( userName: string ) {
+        return await this.githubAuthorizationRepo.findAll({
+            where: {
+            userName: userName
+            }
         });
-        await octokit.repos.createForAuthenticatedUser({
-            name: repoName
-        });
-        const content = fs.readFileSync(join(__dirname, '../input.txt'), "utf-8");
-        const contentEncoded = Base64.encode(content);
-        
-        await octokit.repos.createOrUpdateFileContents({
-            // replace the owner and email with your own details
-            owner: user.username,
-            repo: repoName,
-            path: "Readme.md",
-            message: "feat: Added Readme.md programatically",
-            content: contentEncoded,
-            committer: {
-            name: process.env.OWNER_USERNAME,
-            email: process.env.OWNER_EMAIL
-            },
-            author: {
-            name: process.env.OWNER_USERNAME,
-            email: process.env.OWNER_EMAIL,
-            },
-        });
-        obj.message = 'Repository Successfully Created';
-        return res.render('home', obj);
-    } catch(e) {
-        console.log(e.stack);
-        obj.message = 'Failed to Create Repository.';
-        return res.render('home', obj);
+
+      }
+
+      public getGithubAppToken = () => {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const expiryTime = 9 * 60;
+        const payload = {
+            // Issued at time
+            iat: timestamp,
+            // JWT expiration time
+            exp: timestamp + expiryTime,
+            // Github app identifier
+            iss: 232055,
+        };
+    
+        const token = this.jwtService.sign(payload);
+        return token;
+        };
+
+    public async deleteGithubAuthorization(
+        userName: string,
+        installation_id: number,
+        transaction?: Transaction,
+    ) {
+    return await this.githubAuthorizationRepo.destroy({
+        where: {
+            userName,
+            installation_id,
+        },
+        transaction: transaction,
+      });
     }
-  }
 }
